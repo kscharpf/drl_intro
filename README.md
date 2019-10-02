@@ -48,7 +48,7 @@ Let's take a step back to see where Deep Reinforcement Learning fits in the arti
 
 ### Supervised Learning
 Supervised learning is the most commonly used approach. In supervised learning, a set of labeled training examples is provided as input. The goal of the system is to generate a function that best captures the relationship between the input features and the known **truth** values. An example might be to estimate whether or not your car needs maintenance based on all of the input sensors. In this case, expert mechanics might be asked to look at the sensor inputs and offer their judgements as to whether or not maintenance is required. At its most basic, an example of supervised learning would be a simple linear regression.
-<p><img src="svgs/b60e8a217b0c7ceff66266cf1724b261.svg" align=middle width=75.79696575pt height=14.611878599999999pt/></p>
+<p><img src="/svgs/b60e8a217b0c7ceff66266cf1724b261.svg" align=middle width=75.79696575pt height=14.611878599999999pt/></p>
 
 ### Unsupervised Learning
 Unsupervised learning is, in contrast, where the system learns to represent the data in the absence of any truth values. What is this representation? Going back to the car analogy, the task would no longer be to identify something actionable like whether the car needs maintenance. Instead, the unsupervised learning system might form similar models of "cars" based on these sensor inputs. In the ideal case, maybe the system even learns some model of a car that needs maintenance (though it would not be able to tell you that's what it learned). 
