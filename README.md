@@ -480,3 +480,20 @@ And the last thing to note is the hyperparameters chosen. TAU and GAMMA are fair
 	TAU = 0.01
 	GAMMA = 0.99
 	LR=1e-4
+	
+Let's look at how the performance changes as the agent learns.
+
+	import seaborn as sns
+	import pandas as pd
+	import pickle as pkl
+	import numpy as np
+	scores = pkl.load(open('scores2.pkl','rb'))
+	smoothed_scores = np.array([np.mean(scores[max(i-100,0):i+1]) for i in range(4999)])
+	df = pd.DataFrame(smoothed_scores)
+	ax = sns.lineplot(data=df)
+	ax.set_title("Running 100 Game Average Score")
+	ax.set(xlabel='Game', ylabel='Score')
+	fig = ax.get_figure()
+	fig.savefig("average_scores.png")
+	
+![Breakout Performance By Game](average_scores.png  "Breakout Performance By Game")
