@@ -215,32 +215,268 @@ and
 What this says is that we can calculate the *error* in our value function by comparing the value produced by our state-value function for the current state and the action provided versus the actual reward produced by taking that action plus the expected reward from the next state-action pair.
 
 ### DQN Implementation
-Let's start with our basic algorithm as defined above to illustrate how our DQN agent will fit into the bigger picture.
+Let's start with our basic algorithm as defined above to illustrate how our DQN agent will fit into the bigger picture. First, let's bring in all of the necessary modules.
 
+	from collections import deque, namedtuple
 	import gym
-	from dqn_agent import DqnAgent
-	TARGET_SCORE = 20
-	liveMonitor = False
-	env = gym.make("BreakoutDeterministic-v4")
-	agent = DqnAgent(env.observation_space.shape, env.action_space)
-	for game in range(5000):
-	    done = False
+	import math
+	import random
+	import numpy as np
+	import matplotlib
+	import matplotlib.pyplot as plt
+	from collections import namedtuple
+	from itertools import count
+	
+	import torch
+	import torch.nn as nn
+	import torch.optim as optim
+	import torch.nn.functional as F
+	import torchvision.transforms as T
+
+Next, I'm going to borrow the image pre-processing logic from [here](https://becominghuman.ai/lets-build-an-atari-ai-part-1-dqn-df57e8ff3b26). The point here is to simply reduce the input size. Moving to gray-scale reduces the number of input channels from 3 to 1 and taking every other pixel in both the vertical and horizontal dimensions reduces the number of pixel inputs by a factor of four. In total, the pre-processing step reduces the input size by a factor of 12. 
+
+	def to_grayscale(img):
+	    return np.mean(img, axis=2).astype(np.uint8)
+	
+	def downsample(img):
+	    return img[::2, ::2]
+	
+	def preprocess(img):
+	    return to_grayscale(downsample(img))
+	
+Now we'll define the high-level structure of our game.
+	import pickle
+	env = gym.make('BreakoutDeterministic-v4')
+	action_size = env.action_space.n
+	state = env.reset()
+	height, width = preprocess(state).shape
+	EPS_DECAY  = 0.99995
+	EPS_MIN = 0.05
+	
+	# if gpu is to be used
+	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+	
+	num_episodes = 5000
+	agent = DQNAgent(height, width, action_size, 0)
+	
+	scores = []
+	eps = 1.0
+	for i_episode in range(num_episodes):
+	    # Initialize the environment and state
 	    state = env.reset()
+	    state = preprocess(state)
 	    score = 0
-	    step = 0
-	    while not done:
-	        if liveMonitor:
-	            env.render()
-	        action = agent.act()
-	        next_state, reward, done, _ = env.step(action)
+	    steps = 0
+	    while True:
+	        # Select and perform an action
+	        action = agent.act(state, eps)
+	        next_state, reward, done, _ = env.step(action.item())
+	        next_state = preprocess(next_state)
+	        reward = torch.tensor([reward], device=device)
+	
 	        agent.step(state, action, reward, next_state, done)
-	        score += reward
+	        
+	        score += reward.cpu()[0]
+	        # Move to the next state
+	        state = next_state
+	        eps *= EPS_DECAY
+	        eps = max(eps, EPS_MIN)
+	
+	        steps += 1
 	        if done:
 	            break
-	        step += 1
-	    print("Game {:2d} Completed in {:4d} steps with score {}".format(game, step+1, score))
+	    if i_episode % 500 == 0:
+	      torch.save(agent.qnetwork_local.state_dict(), "breakout_{}.pt".format(i_episode))
+	      pickle.dump(scores, open("scores.pkl","wb"))
+	    scores.append(score)
 	
-	    if score >= TARGET_SCORE:
-	        print("Breakout solved in game {} with score {}".format(game, score))
+	    last20_mean = 0.
+	    last100_mean = 0.
+	    if i_episode > 20:
+	        last20_mean = np.mean(scores[i_episode-20:])
+	    if i_episode > 100:
+	        last100_mean = np.mean(scores[i_episode-100:])
+	    print("\rGame {:3d} Score {:.3f} completed in {:5d} steps eps {:.3f} last 20 avg {:.3f} last 100 avg {:.3f}".format(
+	        i_episode, score, steps, eps, last20_mean, last100_mean), end="")
+	    if i_episode % 20 == 0:
+	        print()
+
+This isn't terribly complicated but we can point out some things of interest. First,
+
+	EPS_DECAY=0.99995
+	EPS_MIN=0.05
+	...
+	eps = 1.0
+	...
+	eps *= EPS_DECAY
+	eps = max(eps, EPS_MIN)
+
+*eps* is epsilon, the probability that the agent should choose to randomly explore the environment versus picking the best action according to the state-value function. What you see is that initially the agent will *only* explore. This is appropriate as the model has not been trained yet. Slowly the exploration probability declines but is still clamped at a minimum probability of exploration of 5%. *Some small exploration probability remains useful at any stage in training as we try to avoid getting stuck in some local minimum.*
+
+There is nothing else terribly interesting in the top-level function. However, it is worth pointing out an error that the author has made far too many times. *Please, please, please remember to store your results regularly within the training loop as it takes too long to restart!*
+
+Let's move on to the creation of the agent. Below is the constructor.
+
+	class DQNAgent:
+	    def __init__(self, height, width, action_size, seed):
+	        self.seed = random.seed(seed)
+	        self.action_size = action_size
+	        self.batch_indices = torch.arange(BATCH_SIZE).long().to(device)
+	        self.samples_before_learning = 10000
+	        self.learn_interval = 20
+	        self.parameter_update_interval = 2
+	        self.tau = TAU
+	        self.gamma = GAMMA
+	
+	        self.qnetwork_local = DQN(height, width, action_size, seed).to(device)
+	        self.qnetwork_target = DQN(height, width, action_size, seed).to(device)
+	        self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR)
+	
+	        self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, seed)
+	
+	        self.t_step = 0
+
+There are a couple of things to note here. First, this implementation is actually a variant on the original DQN called [Double DQN](https://arxiv.org/pdf/1509.06461.pdf). Recall that in the original DQN algorithm the error is calculated between the expected value based on taking some action in the current state and the current reward plus the expected future reward. *Both of those values are using the same state-action function estimator.* It is reasonable to see that the error estimate may be artifically low. Double DQN takes a step to reduce this error by using a separate network for estimating the value of the future action. That separate network is gradually updated in the direction of the first network using a soft update step.
+
+	 def soft_update(self, qnetwork_local, qnetwork_target, tau):
+	        for local_param, target_param in zip(qnetwork_local.parameters(), qnetwork_target.parameters()):
+	            target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
+	
+When selecting an action, the agent looks at the estimated values for each possible action and selects the one that produces the maximum value.
+
+	    def act(self, state, eps=0.):
+	    
+	        state = torch.from_numpy(state).float().unsqueeze(0).to(device)
+	        state = state.reshape((1,state.shape[0], state.shape[1], state.shape[2]))
+	        self.qnetwork_local.eval()
+	        with torch.no_grad():
+	            action_values = self.qnetwork_local(state)
+	        self.qnetwork_local.train()
+	
+	        if random.random() < eps:
+	            return random.choice(np.arange(self.action_size))
+	        else:
+	            return np.argmax(action_values.cpu().data.numpy())
+	            
+The DQNAgent.step method adds the state, action, reward tuple into the replay memory and then takes the learning step.
+
+	    def step(self, state, action, reward, next_state, done):
+	        state = state.reshape((1,1,state.shape[0], state.shape[1]))
+	        next_state = next_state.reshape((1,1,next_state.shape[0], next_state.shape[1]))
+	        self.memory.add(state, action, reward, next_state, done)
+	        self.t_step += 1
+	        if self.t_step % self.learn_interval == 0:
+	            if len(self.memory) > self.samples_before_learning:
+	                indices=None
+	                weights=None
+	                states, actions, rewards, next_states, dones = self.memory.sample()
+	
+	                self.learn(states, actions, rewards, next_states, dones, indices, weights, self.gamma)
+	                
+and finally the learning step. We convert the array of tuples from the memory buffer into a set of column vectors appropriate for pytorch. Note that the general shape of an image for a Conv2D layer is Channels * Height * Width. Here, we need to form a 4D tensor where that fourth dimension is the number of tuples in that array - the batch size. 
+
+	    def learn(self, states, actions, rewards, next_states, dones, indices, weights, gamma):
+	        states = torch.from_numpy(np.vstack(states)).float().to(device)
+	        actions = torch.from_numpy(np.vstack(actions)).long().to(device)
+	        rewards = torch.from_numpy(np.vstack(rewards)).float().to(device)
+	        next_states = torch.from_numpy(np.vstack(next_states)).float().to(device)
+	        dones = torch.from_numpy(np.vstack(dones)).float().to(device)
+	        states = states.reshape((BATCH_SIZE, 1, states.shape[1], states.shape[2]))
+	        next_states = next_states.reshape((BATCH_SIZE, 1, next_states.shape[1], next_states.shape[2]))
+	
+	        Q_targets_next = self.qnetwork_target(next_states).detach()
+	
+	        Q_targets_next = Q_targets_next.max(1)[0]
+	
+	        Q_targets = rewards + gamma * Q_targets_next.reshape((BATCH_SIZE, 1)) * (1 - dones)
+	
+	        pred = self.qnetwork_local(states)
+	        Q_expected = pred.gather(1, actions)
+	
+	        self.optimizer.zero_grad()
+	        loss = F.mse_loss(Q_expected, Q_targets)
+	        loss.backward()
+	        self.optimizer.step()
+	
+	        if self.t_step % self.parameter_update_interval == 0:
+	            self.soft_update(self.qnetwork_local, self.qnetwork_target, self.tau)
+	            
+Finally, we can take a look at the network itself. We have two convolutional layers with 32 and 64 filters respectively with kernel sizes of 8 and 4. Following the convolutional layers there are three fully-connected layers of 512 and 128 units finally connecting to the output layer where the number of units corresponds to the number of available actions.
+
+	class DQN(nn.Module):
+	
+	    def __init__(self, h, w, outputs, seed):
+	        super(DQN, self).__init__()
+	        print("h: {} w: {} outputs {}".format(h, w, outputs))
+	        self.seed = torch.manual_seed(seed)
+	        self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
+	        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+	
+	        # Number of Linear input connections depends on output of conv2d layers
+	        # and therefore the input image size, so compute it.
+	        def conv2d_size_out(size, kernel_size, stride):
+	            return (size - (kernel_size - 1) - 1) // stride  + 1
+	        convw = conv2d_size_out(conv2d_size_out(w,kernel_size=8,stride=4), kernel_size=4, stride=2)
+	        convh = conv2d_size_out(conv2d_size_out(h, kernel_size=8, stride=4), 
+	                                                kernel_size=4, stride=2)
+	        linear_input_size = convw * convh * 64
+	        self.fc1 = nn.Linear(linear_input_size, 512)
+	        self.fc2 = nn.Linear(512,128)
+	        self.fc3 = nn.Linear(128, outputs)
 	        
-	env.close()
+	
+	    # Called with either one element to determine next action, or a batch
+	    # during optimization. Returns tensor([[left0exp,right0exp]...]).
+	    def forward(self, x):
+	        x = F.relu(self.conv1(x))
+	        x = F.relu(self.conv2(x))
+	        x = F.relu(self.fc1(x.view(x.size(0), -1)))
+	        x = F.relu(self.fc2(x))
+	        return self.fc3(x)
+	        
+For completeness, the replay memory structure is shown. 
+
+	class ReplayBuffer:
+	    """Fixed-size buffer to store experience tuples."""
+	
+	    def __init__(self, action_size, buffer_size, batch_size, seed):
+	        """Initialize a ReplayBuffer object.
+	        Params
+	        ======
+	            buffer_size (int): maximum size of buffer
+	            batch_size (int): size of each training batch
+	        """
+	        self.action_size = action_size
+	        self.memory = deque(maxlen=buffer_size)  # internal memory (deque)
+	        self.batch_size = batch_size
+	        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
+	        self.seed = random.seed(seed)
+	    
+	    def add(self, state, action, reward, next_state, done):
+	        """Add a new experience to memory."""
+	        e = self.experience(state, action, reward, next_state, done)
+	        self.memory.append(e)
+	    
+	    def sample(self):
+	        """Randomly sample a batch of experiences from memory."""
+	        experiences = random.sample(self.memory, k=self.batch_size)
+	
+	        states = torch.from_numpy(np.vstack([e.state for e in experiences if e is not None])).float().to(device)
+	        actions = torch.from_numpy(np.vstack([e.action for e in experiences if e is not None])).float().to(device)
+	        rewards = torch.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).float().to(device)
+	        next_states = torch.from_numpy(np.vstack([e.next_state for e in experiences if e is not None])).float().to(device)
+	        dones = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(device)
+	
+	        return (states, actions, rewards, next_states, dones)
+	
+	    def __len__(self):
+	        """Return the current size of internal memory."""
+	        return len(self.memory)
+	        
+And the last thing to note is the hyperparameters chosen. TAU and GAMMA are fairly conventional 0.01 and 0.99. The learning rate is set to 1e-4 as some experiments indicated that helped with this problem. The batch size and the buffer size are fairly conventional as well.
+
+	BATCH_SIZE = 128
+	BUFFER_SIZE = int(2e5)
+	TAU = 0.01
+	GAMMA = 0.99
+	LR=1e-4
