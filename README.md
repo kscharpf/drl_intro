@@ -1,4 +1,4 @@
-# Introduction to Deep Reinforcement Learning
+# Deep Reinforcement Learning: From Zero to Hero
 This post is my attempt to wrap my head around deep reinforcement learning. Hopefully, you will find it useful. However, note that I am by no means an expert on the subject so if something in my writing is amiss, let me know.
 
 Outline:
