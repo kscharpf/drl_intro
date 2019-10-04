@@ -62,7 +62,7 @@ Deep learning is a technique used in machine learning tasks and can be applied t
 ![Deep Reinforcement Learning Image](drlnd_venn_diagram.png  "Figure 2. Deep Reinforcement Learning ")
 Deep learning is really just an artificial neural network (ANN) with one or more hidden layers (and new branding!). The structure of a simple feed-forward network is shown in the figure below.
 
-![Deep Learning](neural-network.png  "Figure 3. Deep Learning")
+![Deep Learning](neuron.png  "Figure 3. Deep Learning")
 
 Deep learning has had phenomenal success in recent years. There are a few reasons why deep learning has been so successful:
 - The [Universal Approximation Theorem](https://en.wikipedia.org/wiki/Universal_approximation_theorem) shows that a neural network exists to model *any* relationship between inputs and outputs. 
@@ -496,4 +496,4 @@ Let's look at how the performance changes as the agent learns.
 	fig = ax.get_figure()
 	fig.savefig("average_scores.png")
 	
-![Breakout Performance By Game](average_scores.png  "Breakout Performance By Game")
+![Breakout Performance By Game](average_scores.png  "Breakout Performance By Game"
